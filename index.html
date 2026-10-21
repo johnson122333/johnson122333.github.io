@@ -268,6 +268,7 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
 <body>
 <div id="app"><div class="stack" id="view" aria-live="polite"></div></div>
 <input type="file" id="restore-file" accept="application/json,.json" hidden>
+<input type="file" id="import-file" accept=".txt,text/plain" hidden>
 
 <nav class="tabbar" aria-label="主選單">
   <div class="tabbar-inner">
@@ -753,6 +754,9 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
       item('templates', '記帳範本', S.config.templates.length + ' 個') +
       item('recurring', '定期收支', S.config.recurring.length + ' 個') +
       '</section>' +
+      '<section class="card stack" style="gap:10px"><span class="bold">捷徑快速記帳</span>' +
+      '<p class="help" style="margin:0">用 iPhone「捷徑」記下的帳，會存在 iCloud 雲碟的「記帳收件匣.txt」。按下面的按鈕選這個檔案，就會加進記帳本；已匯入過的會自動略過。</p>' +
+      '<button class="btn wide" data-act="import-shortcut">匯入捷徑紀錄</button></section>' +
       '<section class="card stack" style="gap:10px"><span class="bold">資料與備份</span>' +
       '<p class="help" style="margin:0">紀錄只存在這支手機。刪除主畫面的記帳圖示、清除 Safari 資料或換手機，紀錄都會消失，請定期備份（建議每月一次，存到 iCloud 雲碟）。' +
       '<br>共 ' + count + ' 筆紀錄' + (lastBackup() ? '，上次備份：' + lastBackup() : '，還沒有備份過') + '。</p>' +
@@ -1108,6 +1112,67 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
     render();
   }
 
+  // ---------- 捷徑收件匣 ----------
+  // 每行格式：2026-10-21 12:30:05|支出|餐飲|120|午餐便當|現金（備註與帳戶可省略）
+  const IMPORTED_KEY = LOCAL_KEY + '-imported';
+  function importedIds() {
+    try { return new Set(JSON.parse(localStorage.getItem(IMPORTED_KEY) || '[]')); } catch (e) { return new Set(); }
+  }
+  function lineHash(s) {
+    let h = 5381;
+    for (const ch of s) h = ((h * 33) ^ ch.codePointAt(0)) >>> 0;
+    return h.toString(36) + s.length.toString(36);
+  }
+
+  function importShortcutText(text) {
+    const done = importedIds();
+    allRecords().forEach((r) => done.add(r.id));
+    let added = 0, skipped = 0, bad = 0;
+    text.split(/\r?\n/).forEach((raw) => {
+      const line = raw.replace(/\uFEFF/g, '').trim();
+      if (!line) return;
+      const parts = line.split(/[|｜]/).map((x) => x.trim());
+      if (parts.length < 4) { bad++; return; }
+      const m = parts[0].match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+      const kind = parts[1] === '收入' ? 'income' : parts[1] === '支出' ? 'expense' : null;
+      const amount = num(parts[3].replace(/[^\d.]/g, ''));
+      if (!m || !kind || !(amount > 0)) { bad++; return; }
+      const id = 'sc-' + lineHash(line);
+      if (done.has(id)) { skipped++; return; }
+      const date = m[1] + '-' + pad(+m[2]) + '-' + pad(+m[3]);
+      const names = CATS[kind].map((c) => c[0]);
+      const acc = parts[5] ? S.config.accounts.find((a) => a.name === parts[5]) : null;
+      const ts = m[4] ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)).getTime() : Date.now();
+      const rec = {
+        id, kind, amount, category: names.indexOf(parts[2]) >= 0 ? parts[2] : '其他',
+        note: parts[4] || '', date, ts, accountID: acc ? acc.id : validAccount(S.config.lastAccountID), toAccountID: null
+      };
+      const key = date.slice(0, 7);
+      S.months[key] = monthRecords(key).concat([rec]);
+      done.add(id);
+      added++;
+    });
+    try {
+      const ids = Array.from(done).filter((x) => x.indexOf('sc-') === 0);
+      localStorage.setItem(IMPORTED_KEY, JSON.stringify(ids));
+    } catch (e) { /* 忽略 */ }
+    saveLocal();
+    render();
+    let msg = added ? '已匯入 ' + added + ' 筆' : '沒有新的紀錄';
+    if (skipped) msg += '，略過 ' + skipped + ' 筆已匯入';
+    if (bad) msg += '，' + bad + ' 行格式不對';
+    toast(msg);
+  }
+
+  document.getElementById('import-file').addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => importShortcutText(String(reader.result || ''));
+    reader.readAsText(file);
+  });
+
   function lastBackup() {
     try { return localStorage.getItem(LOCAL_KEY + '-last-backup'); } catch (e) { return null; }
   }
@@ -1326,6 +1391,9 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
         break;
       case 'restore':
         document.getElementById('restore-file').click();
+        break;
+      case 'import-shortcut':
+        document.getElementById('import-file').click();
         break;
     }
   });
