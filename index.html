@@ -59,7 +59,14 @@
 }
 
 * { box-sizing: border-box; }
-html, body { background: var(--bg); margin: 0; }
+html, body { background: var(--bg); margin: 0; max-width: 100%; overflow-x: hidden; overscroll-behavior-x: none; }
+body { touch-action: pan-y; position: relative; }
+#app, .overlay-inner, .stack, .card, .hero, .day { max-width: 100%; min-width: 0; }
+input, select, button { max-width: 100%; }
+/* iPhone 的日期欄位有固定寬度，會把版面撐寬，所以要縮回格子內 */
+input[type="date"] { min-width: 0; width: 100%; -webkit-appearance: none; appearance: none; text-align: left; }
+input[type="date"]::-webkit-date-and-time-value { text-align: left; min-height: 1.4em; }
+.grid2 > *, .details > * { min-width: 0; }
 html { padding-top: env(safe-area-inset-top, 0px); }
 body {
   color: var(--ink);
@@ -222,7 +229,7 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
 
 /* 全螢幕面板 */
 .overlay {
-  position: fixed; inset: 0; z-index: 40; background: var(--bg); overflow-y: auto;
+  position: fixed; inset: 0; z-index: 40; background: var(--bg); overflow-y: auto; overflow-x: hidden; overscroll-behavior-x: none;
   padding: env(safe-area-inset-top, 0px) max(16px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(16px, env(safe-area-inset-left, 0px));
 }
 .overlay-inner { max-width: 520px; margin: 0 auto; padding-block: 8px 24px; display: flex; flex-direction: column; gap: 12px; min-height: 100%; }
@@ -525,6 +532,7 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
     S.cfgLoaded = S.monthsLoaded = true;
     render();
     runRecurring();
+    autoSync();
     // 請瀏覽器盡量保留資料，不要在空間不足時自動清除
     try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { /* 忽略 */ }
   }
@@ -549,9 +557,31 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
     };
   }
 
-  function balanceOf(acc) {
+  // 投資帳戶更新市值後，餘額 = 市值 + 更新之後才發生的收支與轉帳
+  function afterValuation(acc, r) {
+    const v = acc.valuation;
+    if (!v) return true;
+    return r.date > v.date || (r.date === v.date && (r.ts || 0) > (v.ts || 0));
+  }
+
+  // 淨投入 = 原有成本 + 轉入 − 轉出（賣出轉回銀行會減少淨投入）
+  function investedOf(acc) {
     let total = Number(acc.initial) || 0;
     allRecords().forEach((r) => {
+      if (r.kind !== 'transfer') return;
+      if (r.toAccountID === acc.id) total += r.amount;
+      if (r.accountID === acc.id) total -= r.amount;
+    });
+    return Math.round(total * 100) / 100;
+  }
+
+  const signedNum = (n) => (n > 0 ? '+' : n < 0 ? '−' : '') + fmt(Math.abs(n));
+
+  function balanceOf(acc) {
+    const v = acc.valuation;
+    let total = v ? Number(v.value) || 0 : Number(acc.initial) || 0;
+    allRecords().forEach((r) => {
+      if (!afterValuation(acc, r)) return;
       if (r.kind === 'expense' && r.accountID === acc.id) total -= r.amount;
       else if (r.kind === 'income' && r.accountID === acc.id) total += r.amount;
       else if (r.kind === 'transfer') {
@@ -631,7 +661,8 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
   }
 
   function modeChip() {
-    return '<span class="chip-note cloud">存在這支手機</span>';
+    const t = S.lastSync ? ' · 已同步 ' + pad(S.lastSync.getHours()) + ':' + pad(S.lastSync.getMinutes()) : '';
+    return '<span class="chip-note cloud">存在這支手機' + t + '</span>';
   }
 
   // ---------- 統計 ----------
@@ -734,6 +765,14 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
   }
 
   // ---------- 帳戶 ----------
+  function accountSub(a, bal) {
+    if (a.kind !== 'investment') return ACCOUNT_KINDS[a.kind] || '';
+    const inv = investedOf(a);
+    if (!a.valuation) return inv > 0 ? '投資 · 點進去更新市值' : '投資';
+    const profit = Math.round((bal - inv) * 100) / 100;
+    return '投資 · 損益 ' + signedNum(profit) + (inv > 0 ? '（' + (profit >= 0 ? '+' : '−') + Math.abs(profit / inv * 100).toFixed(1) + '%）' : '');
+  }
+
   function accountsHTML() {
     const balances = S.config.accounts.map((a) => ({ a, bal: balanceOf(a) }));
     const assets = balances.filter((x) => x.bal > 0).reduce((s, x) => s + x.bal, 0);
@@ -754,7 +793,7 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
         const col = ACCOUNT_COLORS[x.a.kind] || ACCOUNT_COLORS.cash;
         return '<button class="row acct" data-act="panel" data-panel="account" data-id="' + esc(x.a.id) + '">' +
           '<span class="badge" style="background:' + col[0] + ';color:' + col[1] + '" aria-hidden="true">' + esc(x.a.name.slice(0, 1)) + '</span>' +
-          '<span class="row-main"><span class="row-title">' + esc(x.a.name) + '</span><span class="row-sub">' + (ACCOUNT_KINDS[x.a.kind] || '') + '</span></span>' +
+          '<span class="row-main"><span class="row-title">' + esc(x.a.name) + '</span><span class="row-sub">' + accountSub(x.a, x.bal) + '</span></span>' +
           '<span class="amt" style="color:' + (x.bal < 0 ? 'var(--expense)' : 'var(--ink)') + '">' + (x.bal < 0 ? '−' + fmt(-x.bal) : fmt(x.bal)) + '</span></button>';
       }).join('') : '<p class="muted small">還沒有帳戶，點右上角 ＋ 新增。</p>') +
       '</section>' +
@@ -782,9 +821,10 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
       item('templates', '記帳範本', S.config.templates.length + ' 個') +
       item('recurring', '定期收支', S.config.recurring.length + ' 個') +
       item('categories', '分類管理', (S.config.customCats.expense.length + S.config.customCats.income.length) + ' 個自訂') +
+      item('sync', '雲端同步（捷徑自動記帳）', syncSettings() ? '已設定' : '未設定') +
       '</section>' +
-      '<section class="card stack" style="gap:10px"><span class="bold">捷徑快速記帳</span>' +
-      '<p class="help" style="margin:0">用 iPhone「捷徑」記下的帳（例如「午餐 120」）會存在「記帳收件匣.txt」。按「匯入捷徑紀錄」選這個檔案就會加進記帳本。記帳本裡已經有的會自動略過，刪掉的會被補回來；記錯的帳請點開修改，不要刪除。</p>' +
+      '<section class="card stack" style="gap:10px"><span class="bold">從檔案匯入捷徑紀錄</span>' +
+      '<p class="help" style="margin:0">沒有使用雲端同步時，可以把捷徑存下的「記帳收件匣.txt」選進來。記帳本裡已經有的會自動略過，刪掉的會被補回來；記錯的帳請點開修改，不要刪除。</p>' +
       '<button class="btn wide" data-act="import-shortcut">匯入捷徑紀錄</button></section>' +
       '<section class="card stack" style="gap:10px"><span class="bold">資料與備份</span>' +
       '<p class="help" style="margin:0">紀錄只存在這支手機。刪除主畫面的記帳圖示、清除 Safari 資料或換手機，紀錄都會消失，請定期備份（建議每月一次，存到 iCloud 雲碟）。' +
@@ -1032,12 +1072,25 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
       const acc = p.id ? accountById(p.id) : null;
       const kindOpts = Object.keys(ACCOUNT_KINDS).map((k) => '<option value="' + k + '"' + ((acc ? acc.kind : 'cash') === k ? ' selected' : '') + '>' + ACCOUNT_KINDS[k] + '</option>').join('');
       const confirming = S.confirm === 'delete-account';
-      html = head(acc ? acc.name : '新增帳戶') +
+      let valuationCard = '';
+      if (acc && acc.kind === 'investment') {
+        const bal = balanceOf(acc), inv = investedOf(acc), profit = Math.round((bal - inv) * 100) / 100;
+        valuationCard = '<section class="card stack" style="gap:10px"><span class="bold">目前市值</span>' +
+          '<div class="grid2"><div class="stat"><span class="small muted">市值</span><b style="display:block;font-size:17px">' + nt(bal) + '</b></div>' +
+          '<div class="stat"><span class="small muted">淨投入</span><b style="display:block;font-size:17px">' + nt(inv) + '</b></div></div>' +
+          '<div class="stat"><span class="small muted">總損益</span><b style="display:block;font-size:17px">' + (profit >= 0 ? '+' : '−') + 'NT$ ' + fmt(Math.abs(profit)) +
+          (inv > 0 ? '（' + (profit >= 0 ? '+' : '−') + Math.abs(profit / inv * 100).toFixed(1) + '%）' : '') + '</b></div>' +
+          '<div class="field"><label for="a-value">更新市值（到券商 App 看目前總市值後輸入）</label><input class="input" id="a-value" inputmode="decimal" value="' + editable(bal) + '"></div>' +
+          '<button class="btn wide" data-act="save-valuation">更新市值</button>' +
+          '<p class="help" style="margin:0">' + (acc.valuation ? '上次更新：' + acc.valuation.date + '。' : '') +
+          '買股票請用「轉帳」（銀行 → 這個帳戶），不是收入也不是支出。賣出時反過來轉回銀行。股利記為「收入 › 投資」，手續費和證交稅記為支出。市值更新後，更新之後的轉帳會自動加進市值。</p></section>';
+      }
+      html = head(acc ? acc.name : '新增帳戶') + valuationCard +
         '<section class="card stack" style="gap:12px">' +
         '<div class="field"><label for="a-name">帳戶名稱</label><input class="input" id="a-name" value="' + esc(acc ? acc.name : '') + '" placeholder="例如：玉山銀行"' + (acc ? '' : ' data-autofocus') + '></div>' +
         '<div class="grid2"><div class="field"><label for="a-kind">類型</label><select class="input" id="a-kind">' + kindOpts + '</select></div>' +
         '<div class="field"><label for="a-initial">開始時的餘額</label><input class="input" id="a-initial" inputmode="decimal" value="' + (acc ? editable(Number(acc.initial) || 0) : '') + '" placeholder="0"></div></div>' +
-        '<p class="help" style="margin:0">信用卡等負債請輸入負數，例如 -12380。目前餘額 = 開始時的餘額 + 這個帳戶的收支與轉帳。</p>' +
+        '<p class="help" style="margin:0">信用卡等負債請輸入負數，例如 -12380。投資帳戶請填原本已經投入的成本。目前餘額 = 開始時的餘額 + 這個帳戶的收支與轉帳。</p>' +
         '<button class="btn wide" data-act="save-account">儲存</button>' +
         (acc ? '<button class="btn danger wide ' + (confirming ? 'confirming' : '') + '" data-act="delete-account">' + (confirming ? '再按一次確認刪除（紀錄會保留）' : '刪除帳戶') + '</button>' : '') +
         '</section>' +
@@ -1070,6 +1123,26 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
             '<button class="icon-btn ' + (confirming ? 'confirming' : '') + '" data-act="delete-tpl" data-id="' + esc(t.id) + '" aria-label="' + (confirming ? '再按一次確認刪除' : '刪除 ' + esc(t.name)) + '" style="color:var(--expense)">' + ICON.trash + '</button></div>';
         }).join('') : '<p class="muted small">還沒有範本。</p>') + '</section>' +
         entryForm(false);
+    }
+
+    if (p.type === 'sync') {
+      const cfg = syncSettings() || { url: '', token: '' };
+      const failed = readJSON(FAILED_KEY, []);
+      html = head('雲端同步') +
+        '<p class="help" style="margin:0">用捷徑記帳時，內容會先送到你自己的 Cloudflare 收件匣。記帳本每次打開（或從背景回來）會自動取回並加進來，不用再手動匯入。</p>' +
+        '<section class="card stack" style="gap:12px">' +
+        '<div class="field"><label for="s-url">收件匣網址</label><input class="input" id="s-url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://ledger-inbox.你的名稱.workers.dev" value="' + esc(cfg.url) + '"></div>' +
+        '<div class="field"><label for="s-token">密鑰</label><input class="input" id="s-token" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="自己決定的一串英數字" value="' + esc(cfg.token) + '"></div>' +
+        '<div class="grid2"><button class="btn ghost" data-act="gen-token">產生密鑰</button><button class="btn ghost" data-act="copy-token">複製密鑰</button></div>' +
+        '<button class="btn wide" data-act="sync-save">儲存並測試連線</button>' +
+        (p.status ? '<p class="small" style="margin:0;font-weight:500">' + esc(p.status) + '</p>' : '') +
+        (syncSettings() ? '<button class="btn ghost wide" data-act="sync-now">立即同步</button>' +
+          '<button class="btn danger wide ' + (S.confirm === 'sync-clear' ? 'confirming' : '') + '" data-act="sync-clear">' + (S.confirm === 'sync-clear' ? '再按一次確認清除' : '清除同步設定') + '</button>' : '') +
+        '</section>' +
+        (failed.length ? '<section class="card stack" style="gap:8px"><span class="bold">看不懂的紀錄</span>' +
+          '<p class="help" style="margin:0">這些文字沒有金額，所以沒有記進帳裡，請手動新增。</p>' +
+          failed.map((t) => '<div class="row-sub" style="white-space:normal">' + esc(t) + '</div>').join('') +
+          '<button class="btn ghost wide" data-act="clear-failed">清除這份清單</button></section>' : '');
     }
 
     if (p.type === 'categories') {
@@ -1249,7 +1322,51 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
     return { date, ts, rest };
   }
 
-  function parseLine(line) {
+  // 帳戶名稱也可以只打簡稱，例如「京城銀行」打「京城」
+  function accountKeys(a) {
+    const keys = [a.name, a.name.replace(/銀行|帳戶|戶頭|證券|帳號/g, '')];
+    return keys.filter((k, i) => k.length >= 2 && keys.indexOf(k) === i);
+  }
+
+  function findAccounts(text) {
+    let rest = text;
+    const found = [];
+    const cands = [];
+    S.config.accounts.forEach((a) => accountKeys(a).forEach((k) => cands.push({ a, k })));
+    cands.sort((x, y) => y.k.length - x.k.length);
+    cands.forEach((c) => {
+      if (found.some((f) => f.a.id === c.a.id)) return;
+      const i = rest.indexOf(c.k);
+      if (i < 0) return;
+      found.push({ a: c.a, index: i });
+      rest = rest.slice(0, i) + ' '.repeat(c.k.length) + rest.slice(i + c.k.length);
+    });
+    found.sort((x, y) => x.index - y.index);
+    return { accounts: found.map((f) => f.a), rest: rest.replace(/\s+/g, ' ').trim() };
+  }
+
+  // 找金額：有「元」「NT$」的優先，否則取最大的數字（避免「0050 買入 10000」抓到 0050）
+  function pickAmount(rest) {
+    let m = rest.match(/(?:NT\$|\$)\s*(\d[\d,]*(?:\.\d+)?)/) || rest.match(/(\d[\d,]*(?:\.\d+)?)\s*(?:元|塊錢|塊|台幣)/);
+    let hit = m ? { index: m.index, text: m[0], value: m[1] } : null;
+    if (!hit) {
+      const re = /\d[\d,]*(?:\.\d+)?/g;
+      let x, best = null;
+      while ((x = re.exec(rest))) {
+        const v = num(x[0]);
+        if (!best || v > best.v) best = { index: x.index, text: x[0], value: x[0], v };
+      }
+      hit = best;
+    }
+    if (!hit) return null;
+    return { amount: num(hit.value), rest: rest.slice(0, hit.index) + ' ' + rest.slice(hit.index + hit.text.length) };
+  }
+
+  const INVEST_BUY = /買股|買入|買進|申購|加碼|投入|定期定額/;
+  const INVEST_SELL = /賣股|賣出|賣掉|贖回/;
+
+  // fallback：沒有寫日期時使用的日期（雲端收件匣會帶入記帳當下的時間）
+  function parseLine(line, fallback) {
     // 舊格式：日期|支出|分類|金額|備註|帳戶
     const parts = line.split(/[|｜]/).map((x) => x.trim());
     if (parts.length >= 4) {
@@ -1260,27 +1377,57 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
       const names = CATS[kind].map((c) => c[0]);
       return { date: when.date, ts: when.ts, kind, amount, category: names.indexOf(parts[2]) >= 0 ? parts[2] : '其他', note: parts[4] || '', account: parts[5] || '' };
     }
-    // 簡單格式：[日期] 午餐 120
-    const when = parseWhen(line);
+    // 簡單格式：[日期] 午餐 120 [帳戶]
+    const when = parseWhen(line) || (fallback ? { date: fallback.date, ts: fallback.ts, rest: line } : null);
     if (!when) return null;
-    let rest = when.rest;
-    const n = rest.match(/(\d[\d,]*(?:\.\d+)?)/);
-    if (!n) return null;
-    const amount = num(n[1]);
-    if (!(amount > 0)) return null;
-    rest = rest.replace(n[0], ' ').replace(/NT\$|元|塊錢|塊|台幣/g, ' ');
-    let category = null;
-    // 名稱長的先比對，避免「日用品」被「日用」搶走
-    const direct = allCatNames().slice().sort((x, y) => y.length - x.length).find((c) => rest.indexOf(c) >= 0);
-    if (direct) category = direct;
-    else {
-      const hit = KEYWORDS.find((k) => k[1].some((w) => rest.indexOf(w) >= 0));
-      if (hit) category = hit[0];
+    const found = findAccounts(when.rest);
+    const picked = pickAmount(found.rest);
+    if (!picked || !(picked.amount > 0)) return null;
+    const amount = picked.amount;
+    const rest = picked.rest.replace(/NT\$|元|塊錢|塊|台幣/g, ' ').replace(/\s+/g, ' ').trim();
+    const accs = found.accounts;
+    const inv = S.config.accounts.filter((a) => a.kind === 'investment');
+
+    let kind = 'expense', category = null, accountID = accs[0] ? accs[0].id : null, toAccountID = null;
+    const sell = INVEST_SELL.test(rest) && !INVEST_BUY.test(rest);
+    if (accs.length >= 2) {
+      // 兩個帳戶：依出現順序，前面轉到後面
+      kind = 'transfer'; category = '轉帳'; accountID = accs[0].id; toAccountID = accs[1].id;
+    } else if (inv.length && (INVEST_BUY.test(rest) || INVEST_SELL.test(rest))) {
+      const invAcc = accs.find((a) => a.kind === 'investment') || inv[0];
+      const other = accs.find((a) => a.id !== invAcc.id) ||
+        S.config.accounts.find((a) => a.id === S.config.lastAccountID && a.kind !== 'investment') ||
+        S.config.accounts.find((a) => a.kind !== 'investment');
+      if (other) {
+        kind = 'transfer'; category = '轉帳';
+        accountID = sell ? invAcc.id : other.id;
+        toAccountID = sell ? other.id : invAcc.id;
+      }
     }
-    let kind = /收入/.test(rest) || (category && incomeOnly(category)) ? 'income' : 'expense';
-    if (!category) category = '其他';
+    if (kind !== 'transfer') {
+      // 名稱長的先比對，避免「日用品」被「日用」搶走
+      const direct = allCatNames().slice().sort((x, y) => y.length - x.length).find((c) => rest.indexOf(c) >= 0);
+      if (direct) category = direct;
+      else {
+        const hit = KEYWORDS.find((k) => k[1].some((w) => rest.indexOf(w) >= 0));
+        if (hit) category = hit[0];
+      }
+      if (/收入/.test(rest) || (category && incomeOnly(category))) kind = 'income';
+      if (!category) category = '其他';
+    }
     const note = rest.replace(/收入|支出/g, ' ').replace(/\s+/g, ' ').trim();
-    return { date: when.date, ts: when.ts, kind, amount, category, note, account: '' };
+    return { date: when.date, ts: when.ts, kind, amount, category, note, accountID, toAccountID, account: '' };
+  }
+
+  function addParsed(p, id) {
+    const legacy = p.account ? S.config.accounts.find((a) => a.name === p.account) : null;
+    const rec = {
+      id, kind: p.kind, amount: p.amount, category: p.category, note: p.note, date: p.date, ts: p.ts,
+      accountID: p.accountID || (legacy ? legacy.id : validAccount(S.config.lastAccountID)),
+      toAccountID: p.toAccountID || null
+    };
+    const key = p.date.slice(0, 7);
+    S.months[key] = monthRecords(key).concat([rec]);
   }
 
   // 只略過記帳本裡目前還在的紀錄，刪掉的會在下次匯入時補回
@@ -1294,13 +1441,7 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
       if (done.has(id)) { skipped++; return; }
       const p = parseLine(line);
       if (!p) { bad++; return; }
-      const acc = p.account ? S.config.accounts.find((a) => a.name === p.account) : null;
-      const rec = {
-        id, kind: p.kind, amount: p.amount, category: p.category, note: p.note, date: p.date, ts: p.ts,
-        accountID: acc ? acc.id : validAccount(S.config.lastAccountID), toAccountID: null
-      };
-      const key = p.date.slice(0, 7);
-      S.months[key] = monthRecords(key).concat([rec]);
+      addParsed(p, id);
       done.add(id);
       added++;
     });
@@ -1320,6 +1461,112 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
     reader.onload = () => importShortcutText(String(reader.result || ''));
     reader.readAsText(file);
   });
+
+  // ---------- 雲端收件匣（Cloudflare）----------
+  const SYNC_KEY = LOCAL_KEY + '-sync';
+  const SEEN_KEY = LOCAL_KEY + '-sync-seen';
+  const FAILED_KEY = LOCAL_KEY + '-sync-failed';
+  const readJSON = (key, fallback) => { try { const v = JSON.parse(localStorage.getItem(key) || 'null'); return v == null ? fallback : v; } catch (e) { return fallback; } };
+  const writeJSON = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* 忽略 */ } };
+
+  function syncSettings() {
+    const v = readJSON(SYNC_KEY, null);
+    return v && v.url && v.token ? v : null;
+  }
+
+  function syncError(code, message) {
+    const e = new Error(message);
+    e.code = code;
+    return e;
+  }
+
+  async function callApi(cfg, path, options) {
+    const headers = { Authorization: 'Bearer ' + cfg.token };
+    const init = { cache: 'no-store', headers };
+    if (options && options.body) {
+      init.method = options.method || 'POST';
+      init.body = options.body;
+      headers['Content-Type'] = 'application/json';
+    }
+    let res;
+    try {
+      res = await fetch(cfg.url + path, init);
+    } catch (e) {
+      throw syncError('network', '連不上收件匣');
+    }
+    if (res.status === 401) throw syncError('auth', '密鑰不正確');
+    if (!res.ok) throw syncError('http', '收件匣回應錯誤（' + res.status + '）');
+    return res.json();
+  }
+
+  function describeSyncError(e) {
+    if (e && e.code === 'auth') return '密鑰不正確，請確認和 Cloudflare 上設定的 TOKEN 一模一樣。';
+    if (e && e.code === 'network') return '連不上收件匣，請確認網址是否正確、手機是否有網路。';
+    return (e && e.message) || '同步失敗';
+  }
+
+  async function syncNow() {
+    const cfg = syncSettings();
+    if (!cfg) return { skipped: true };
+    if (S.syncing) return { skipped: true };
+    S.syncing = true;
+    let added = 0;
+    const bad = [];
+    try {
+      for (let round = 0; round < 5; round++) {
+        const data = await callApi(cfg, '/pull');
+        const items = Array.isArray(data.items) ? data.items : [];
+        if (!items.length) break;
+        const seen = new Set(readJSON(SEEN_KEY, []));
+        const done = new Set(allRecords().map((r) => r.id));
+        items.forEach((it) => {
+          const id = 'cf-' + it.id;
+          if (done.has(id) || seen.has(id)) return;
+          const at = Number(it.at) || Date.now();
+          const p = parseLine(String(it.text || ''), { date: ymd(new Date(at)), ts: at });
+          if (!p) { bad.push(String(it.text || '')); return; }
+          addParsed(p, id);
+          done.add(id);
+          seen.add(id);
+          added++;
+        });
+        // 先存到手機，再通知收件匣刪除，避免中途失敗而遺失
+        writeJSON(SEEN_KEY, Array.from(seen).slice(-1000));
+        saveLocal();
+        await callApi(cfg, '/ack', { method: 'POST', body: JSON.stringify({ ids: items.map((it) => it.id) }) });
+        if (!data.more && items.length < 100) break;
+      }
+      S.lastSync = new Date();
+      if (bad.length) writeJSON(FAILED_KEY, readJSON(FAILED_KEY, []).concat(bad).slice(-30));
+      render();
+      if (added) toast('已從雲端同步 ' + added + ' 筆');
+      else if (bad.length) toast('有 ' + bad.length + ' 筆看不懂（沒有金額），詳見設定 › 雲端同步');
+      return { added, bad };
+    } catch (e) {
+      return { error: e };
+    } finally {
+      S.syncing = false;
+    }
+  }
+
+  let lastSyncTry = 0;
+  function autoSync() {
+    if (!syncSettings()) return;
+    const now = Date.now();
+    if (now - lastSyncTry < 4000) return;
+    lastSyncTry = now;
+    syncNow();
+  }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') autoSync(); });
+  window.addEventListener('online', autoSync);
+  window.addEventListener('pageshow', autoSync);
+
+  function randomToken() {
+    const chars = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const bytes = new Uint8Array(32);
+    (window.crypto || window.msCrypto).getRandomValues(bytes);
+    return Array.from(bytes).map((b) => chars[b % chars.length]).join('');
+  }
 
   function lastBackup() {
     try { return localStorage.getItem(LOCAL_KEY + '-last-backup'); } catch (e) { return null; }
@@ -1462,11 +1709,74 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
         const kind = panel.querySelector('#a-kind').value;
         const initial = num(panel.querySelector('#a-initial').value);
         const acc = S.panel.id ? accountById(S.panel.id) : null;
-        if (acc) Object.assign(acc, { name, kind, initial });
-        else S.config.accounts.push({ id: uid(), name, kind, initial });
+        if (acc) {
+          Object.assign(acc, { name, kind, initial });
+          if (kind !== 'investment') delete acc.valuation;
+        } else S.config.accounts.push({ id: uid(), name, kind, initial });
         persistConfig();
         closePanel();
         toast('已儲存帳戶');
+        break;
+      }
+      case 'gen-token':
+        panel.querySelector('#s-token').value = randomToken();
+        break;
+      case 'copy-token': {
+        const v = panel.querySelector('#s-token').value.trim();
+        if (!v) { toast('還沒有密鑰，請先按「產生密鑰」'); break; }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(v).then(() => toast('已複製密鑰')).catch(() => toast('無法複製，請長按密鑰欄位選取複製'));
+        } else toast('無法複製，請長按密鑰欄位選取複製');
+        break;
+      }
+      case 'sync-save': {
+        let url = panel.querySelector('#s-url').value.trim();
+        const token = panel.querySelector('#s-token').value.trim();
+        try { url = new URL(/^https?:\/\//i.test(url) ? url : 'https://' + url).origin; } catch (err) { url = ''; }
+        if (!url || !token) { S.panel.status = '請填入收件匣網址和密鑰。'; renderPanel(); break; }
+        writeJSON(SYNC_KEY, { url, token });
+        S.panel.status = '測試中…';
+        renderPanel();
+        syncNow().then((r) => {
+          if (!S.panel || S.panel.type !== 'sync') return;
+          S.panel.status = r.error ? '❌ ' + describeSyncError(r.error)
+            : '✅ 連線成功。' + (r.added ? '已同步 ' + r.added + ' 筆。' : '目前沒有待同步的紀錄。');
+          renderPanel();
+        });
+        break;
+      }
+      case 'sync-now':
+        S.panel.status = '同步中…';
+        renderPanel();
+        syncNow().then((r) => {
+          if (!S.panel || S.panel.type !== 'sync') return;
+          S.panel.status = r.error ? '❌ ' + describeSyncError(r.error)
+            : '✅ 完成。' + (r.added ? '已同步 ' + r.added + ' 筆。' : '目前沒有待同步的紀錄。');
+          renderPanel();
+        });
+        break;
+      case 'sync-clear':
+        if (S.confirm === 'sync-clear') {
+          try { localStorage.removeItem(SYNC_KEY); } catch (err) { /* 忽略 */ }
+          S.confirm = null;
+          S.lastSync = null;
+          S.panel.status = '已清除同步設定。';
+        } else S.confirm = 'sync-clear';
+        renderPanel();
+        break;
+      case 'clear-failed':
+        writeJSON(FAILED_KEY, []);
+        renderPanel();
+        break;
+      case 'save-valuation': {
+        const acc = accountById(S.panel.id);
+        const raw = panel.querySelector('#a-value').value;
+        if (!acc || String(raw).trim() === '') { toast('請輸入目前市值'); break; }
+        acc.valuation = { value: num(raw), date: ymd(new Date()), ts: Date.now() };
+        persistConfig();
+        renderPanel();
+        render();
+        toast('已更新市值');
         break;
       }
       case 'delete-account':
