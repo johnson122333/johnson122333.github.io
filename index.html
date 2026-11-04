@@ -316,6 +316,7 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
     search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>',
     close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>',
     star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></svg>',
+    edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>',
     trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>',
     del: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 5H9l-6 7 6 7h12z"/><path d="M17 9l-6 6M11 9l6 6"/></svg>',
     plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
@@ -345,18 +346,85 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
     ['#FCE8EC', '#9B2C45', '#E07A93'], ['#E8F1FB', '#1F5A96', '#4F93D8'], ['#F3F0E2', '#6B5B12', '#C9A227'],
     ['#E9F5E4', '#2F6B1F', '#6AAE4F'], ['#F1E9F7', '#6E2F8C', '#A766C9']
   ];
+  function normEdits(src) {
+    const e = src || {};
+    return { renames: e.renames && typeof e.renames === 'object' ? e.renames : {}, hidden: Array.isArray(e.hidden) ? e.hidden : [] };
+  }
+
+  // 分類格式：[名稱, 底色, 字色, 圖表色, 是否自訂, 內建分類的原始名稱]
   function rebuildCats() {
-    const custom = (S && S.config && S.config.customCats) || { expense: [], income: [] };
+    const cfg = (S && S.config) || {};
+    const custom = cfg.customCats || { expense: [], income: [] };
+    const edits = cfg.catEdits || {};
     ['expense', 'income'].forEach((k) => {
+      const ed = normEdits(edits[k]);
       const extra = (custom[k] || []).map((c) => {
         const col = CUSTOM_COLORS[(Number(c.color) || 0) % CUSTOM_COLORS.length];
-        return [c.name, col[0], col[1], col[2], true];
+        return [c.name, col[0], col[1], col[2], true, null];
       });
-      // 「其他」固定放最後
-      const base = BASE_CATS[k].filter((c) => c[0] !== '其他');
-      const other = BASE_CATS[k].filter((c) => c[0] === '其他');
-      CATS[k] = base.concat(extra, other);
+      const baseList = BASE_CATS[k].filter((c) => ed.hidden.indexOf(c[0]) < 0)
+        .map((c) => [ed.renames[c[0]] || c[0], c[1], c[2], c[3], false, c[0]]);
+      // 內建的「其他」固定放最後
+      CATS[k] = baseList.filter((c) => c[5] !== '其他').concat(extra, baseList.filter((c) => c[5] === '其他'));
     });
+  }
+
+  // 內建分類的原始名稱 → 現在的名稱（被刪除就回傳 null）
+  function resolveBaseCat(base) {
+    for (const k of ['expense', 'income']) {
+      const c = CATS[k].find((x) => x[5] === base);
+      if (c) return c[0];
+    }
+    return null;
+  }
+
+  // 認不出分類時使用：優先「其他」，沒有就用最後一個
+  function fallbackCat(kind) {
+    const list = CATS[kind] && CATS[kind].length ? CATS[kind] : CATS.expense;
+    const other = list.find((c) => c[5] === '其他') || list[list.length - 1];
+    return other ? other[0] : '其他';
+  }
+
+  function renameCategory(kind, old, nu) {
+    const cfg = S.config;
+    const custom = cfg.customCats[kind].find((c) => c.name === old);
+    if (custom) custom.name = nu;
+    else {
+      const ed = cfg.catEdits[kind];
+      const base = BASE_CATS[kind].map((c) => c[0]).find((b) => (ed.renames[b] || b) === old);
+      if (base) { if (nu === base) delete ed.renames[base]; else ed.renames[base] = nu; }
+    }
+    // 已記的帳、預算、範本、定期收支一起改成新名稱
+    Object.keys(S.months).forEach((k) => S.months[k].forEach((r) => { if (r.kind === kind && r.category === old) r.category = nu; }));
+    if (kind === 'expense' && cfg.catBudgets[old] !== undefined) { cfg.catBudgets[nu] = cfg.catBudgets[old]; delete cfg.catBudgets[old]; }
+    if (kind === 'expense') cfg.templates.forEach((t) => { if (t.category === old) t.category = nu; });
+    cfg.recurring.forEach((t) => { if ((t.kind || 'expense') === kind && t.category === old) t.category = nu; });
+    rebuildCats();
+    saveLocal();
+  }
+
+  function deleteCategory(kind, name) {
+    const cfg = S.config;
+    const idx = cfg.customCats[kind].findIndex((c) => c.name === name);
+    if (idx >= 0) cfg.customCats[kind].splice(idx, 1);
+    else {
+      const ed = cfg.catEdits[kind];
+      const base = BASE_CATS[kind].map((c) => c[0]).find((b) => (ed.renames[b] || b) === name);
+      if (base && ed.hidden.indexOf(base) < 0) ed.hidden.push(base);
+    }
+    if (kind === 'expense') delete cfg.catBudgets[name];
+    rebuildCats();
+    saveLocal();
+  }
+
+  function restoreCategory(kind, base) {
+    const ed = S.config.catEdits[kind];
+    const display = ed.renames[base] || base;
+    if (CATS[kind].some((c) => c[0] === display)) return false;
+    ed.hidden = ed.hidden.filter((b) => b !== base);
+    rebuildCats();
+    saveLocal();
+    return true;
   }
   const cat = (name) => CATS.expense.find((c) => c[0] === name) || CATS.income.find((c) => c[0] === name) ||
     (name === '轉帳' ? TRANSFER : [name, '#E9EDF0', '#3E4954', '#8A95A1']);
@@ -411,7 +479,8 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
     budget: 0,
     catBudgets: {},
     lastAccountID: 'cash',
-    customCats: { expense: [], income: [] }
+    customCats: { expense: [], income: [] },
+    catEdits: { expense: { renames: {}, hidden: [] }, income: { renames: {}, hidden: [] } }
   });
 
   const S = {
@@ -442,7 +511,8 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
       customCats: {
         expense: c.customCats && Array.isArray(c.customCats.expense) ? c.customCats.expense : [],
         income: c.customCats && Array.isArray(c.customCats.income) ? c.customCats.income : []
-      }
+      },
+      catEdits: { expense: normEdits(c.catEdits && c.catEdits.expense), income: normEdits(c.catEdits && c.catEdits.income) }
     };
   }
 
@@ -829,7 +899,7 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
       item('budget', '每月與分類預算', S.config.budget > 0 ? nt(S.config.budget) : '未設定') +
       item('templates', '記帳範本', S.config.templates.length + ' 個') +
       item('recurring', '定期收支', S.config.recurring.length + ' 個') +
-      item('categories', '分類管理', (S.config.customCats.expense.length + S.config.customCats.income.length) + ' 個自訂') +
+      item('categories', '分類管理', '支出 ' + CATS.expense.length + ' · 收入 ' + CATS.income.length) +
       item('sync', '雲端同步（捷徑自動記帳）', syncSettings() ? '已設定' : '未設定') +
       '</section>' +
       '<section class="card stack" style="gap:10px"><span class="bold">資料與備份</span>' +
@@ -867,7 +937,7 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
 
   function openAdd(opts) {
     opts = opts || {};
-    const category = opts.category || '餐飲';
+    const category = opts.category || (CATS.expense[0] ? CATS.expense[0][0] : '其他');
     S.form = {
       id: null, oldKey: null, ts: null,
       kind: incomeOnly(category) ? 'income' : 'expense',
@@ -1149,22 +1219,29 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
 
     if (p.type === 'categories') {
       const kind = p.catKind || 'expense';
+      const ed = S.config.catEdits[kind];
+      const editing = p.editCat ? CATS[kind].find((c) => c[0] === p.editCat) : null;
       const confirmingName = S.confirm && S.confirm.indexOf('cat-') === 0 ? S.confirm.slice(4) : null;
       html = head('分類管理') +
         '<div class="seg" role="group" aria-label="類型"><button data-act="cat-kind" data-value="expense" aria-pressed="' + (kind === 'expense') + '">支出分類</button>' +
         '<button data-act="cat-kind" data-value="income" aria-pressed="' + (kind === 'income') + '">收入分類</button></div>' +
-        '<section class="card stack" style="gap:12px"><span class="bold">新增' + KIND_TITLE[kind] + '分類</span>' +
-        '<div class="field"><label for="c-name">分類名稱（最多 6 個字）</label><input class="input" id="c-name" maxlength="6" placeholder="' + (kind === 'expense' ? '例如：寵物、保險、孝親' : '例如：租金收入、退款') + '"></div>' +
-        '<button class="btn wide" data-act="add-cat">新增分類</button></section>' +
+        '<section class="card stack" style="gap:12px" id="cat-form"><span class="bold">' + (editing ? '修改分類：' + esc(editing[0]) : '新增' + KIND_TITLE[kind] + '分類') + '</span>' +
+        '<div class="field"><label for="c-name">分類名稱（最多 6 個字）</label><input class="input" id="c-name" maxlength="6" value="' + esc(editing ? editing[0] : '') + '" placeholder="' + (kind === 'expense' ? '例如：寵物、保險、孝親' : '例如：租金收入、退款') + '"></div>' +
+        (editing ? '<p class="help" style="margin:0">改名後，已經記下的帳、預算、範本和定期收支裡的這個分類，會一起改成新名稱。</p>' : '') +
+        '<button class="btn wide" data-act="' + (editing ? 'save-cat' : 'add-cat') + '">' + (editing ? '儲存修改' : '新增分類') + '</button>' +
+        (editing ? '<button class="btn ghost wide" data-act="cancel-cat">取消修改</button>' : '') + '</section>' +
         '<section class="card" style="padding-block:4px">' +
         CATS[kind].map((c) => {
-          const custom = !!c[4];
           const confirming = confirmingName === c[0];
-          return '<div class="row">' + badge(c[0]) + '<span class="row-main"><span class="row-title">' + esc(c[0]) + '</span><span class="row-sub">' + (custom ? '自訂' : '內建') + '</span></span>' +
-            (custom ? '<button class="icon-btn ' + (confirming ? 'confirming' : '') + '" data-act="delete-cat" data-name="' + esc(c[0]) + '" aria-label="' + (confirming ? '再按一次確認刪除' : '刪除 ' + esc(c[0])) + '" style="color:var(--expense)">' + ICON.trash + '</button>' : '') +
+          return '<div class="row">' + badge(c[0]) + '<span class="row-main"><span class="row-title">' + esc(c[0]) + '</span><span class="row-sub">' + (c[4] ? '自訂' : '內建') + '</span></span>' +
+            '<button class="icon-btn" data-act="edit-cat" data-name="' + esc(c[0]) + '" aria-label="修改 ' + esc(c[0]) + '">' + ICON.edit + '</button>' +
+            '<button class="icon-btn ' + (confirming ? 'confirming' : '') + '" data-act="delete-cat" data-name="' + esc(c[0]) + '" aria-label="' + (confirming ? '再按一次確認刪除' : '刪除 ' + esc(c[0])) + '" style="color:var(--expense)">' + ICON.trash + '</button>' +
             '</div>';
         }).join('') + '</section>' +
-        '<p class="help" style="margin:0">刪除自訂分類後，已經記的帳會保留原本的分類名稱。內建分類不能刪除。用捷徑記帳時，句子裡有分類名稱（例如「寵物 500」）就會自動歸到該分類。</p>';
+        (ed.hidden.length ? '<section class="card stack" style="gap:4px"><span class="bold">已刪除的內建分類</span>' +
+          ed.hidden.map((base) => '<div class="row"><span class="row-main"><span class="row-title">' + esc(ed.renames[base] || base) + '</span></span>' +
+            '<button class="btn ghost" style="min-height:40px;padding:0 14px" data-act="restore-cat" data-base="' + esc(base) + '">還原</button></div>').join('') + '</section>' : '') +
+        '<p class="help" style="margin:0">點鉛筆可以改名，點垃圾桶（按兩次）可以刪除，內建和自訂的分類都可以。刪除後，已經記的帳會保留原本的分類名稱，統計裡會顯示成灰色；至少要保留一個分類。用捷徑記帳時，句子裡有分類名稱就會自動歸類，內建的關鍵字（例如「午餐」）會跟著改名後的分類走。</p>';
     }
 
     if (p.type === 'recurring') {
@@ -1387,7 +1464,7 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
       const amount = num(parts[3].replace(/[^\d.]/g, ''));
       if (!when || !kind || !(amount > 0)) return null;
       const names = CATS[kind].map((c) => c[0]);
-      return { date: when.date, ts: when.ts, kind, amount, category: names.indexOf(parts[2]) >= 0 ? parts[2] : '其他', note: parts[4] || '', account: parts[5] || '' };
+      return { date: when.date, ts: when.ts, kind, amount, category: names.indexOf(parts[2]) >= 0 ? parts[2] : fallbackCat(kind), note: parts[4] || '', account: parts[5] || '' };
     }
     // 簡單格式：[日期] 午餐 120 [帳戶]
     const when = parseWhen(line) || (fallback ? { date: fallback.date, ts: fallback.ts, rest: line } : null);
@@ -1431,10 +1508,10 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
       if (direct) category = direct;
       else {
         const hit = KEYWORDS.find((k) => k[1].some((w) => rest.indexOf(w) >= 0));
-        if (hit) category = hit[0];
+        if (hit) category = resolveBaseCat(hit[0]);
       }
       if (/收入/.test(rest) || (category && incomeOnly(category))) kind = 'income';
-      if (!category) category = '其他';
+      if (!category) category = fallbackCat(kind);
     }
     const note = rest.replace(/收入|支出/g, ' ').replace(/\s+/g, ' ').trim();
     return { date: when.date, ts: when.ts, kind, amount, category, note, accountID, toAccountID, account: '' };
@@ -1649,8 +1726,7 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
       case 'fkind': {
         const f = S.form;
         f.kind = d.value;
-        if (f.kind === 'income') f.category = '薪資';
-        else if (f.kind === 'expense') f.category = '餐飲';
+        if (f.kind === 'income' || f.kind === 'expense') f.category = CATS[f.kind][0] ? CATS[f.kind][0][0] : fallbackCat(f.kind);
         else if (!f.toAccountID || f.toAccountID === f.accountID) {
           const other = S.config.accounts.find((a) => a.id !== f.accountID);
           f.toAccountID = other ? other.id : null;
@@ -1821,6 +1897,15 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
         const kind = S.panel.catKind || 'expense';
         const name = panel.querySelector('#c-name').value.replace(/[|｜\s]/g, '').slice(0, 6);
         if (!name) { toast('請輸入分類名稱'); break; }
+        const ed = S.config.catEdits[kind];
+        // 新增的名稱剛好是刪除過的內建分類，就直接還原
+        const hiddenBase = ed.hidden.find((b) => (ed.renames[b] || b) === name);
+        if (hiddenBase && !CATS[kind].some((c) => c[0] === name)) {
+          restoreCategory(kind, hiddenBase);
+          renderPanel();
+          toast('已還原內建分類「' + name + '」');
+          break;
+        }
         if (name === '轉帳' || CATS[kind].some((c) => c[0] === name)) { toast('已經有「' + name + '」這個分類'); break; }
         const used = S.config.customCats.expense.length + S.config.customCats.income.length;
         S.config.customCats[kind].push({ name, color: used % CUSTOM_COLORS.length });
@@ -1830,17 +1915,52 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
         toast('已新增分類「' + name + '」');
         break;
       }
+      case 'edit-cat': {
+        S.panel.editCat = d.name;
+        S.confirm = null;
+        renderPanel();
+        const input = panel.querySelector('#c-name');
+        if (input) { input.scrollIntoView({ block: 'center' }); input.focus(); }
+        break;
+      }
+      case 'cancel-cat':
+        S.panel.editCat = null;
+        renderPanel();
+        break;
+      case 'save-cat': {
+        const kind = S.panel.catKind || 'expense';
+        const old = S.panel.editCat;
+        const name = panel.querySelector('#c-name').value.replace(/[|｜\s]/g, '').slice(0, 6);
+        if (!name) { toast('請輸入分類名稱'); break; }
+        if (name === old) { S.panel.editCat = null; renderPanel(); break; }
+        if (name === '轉帳' || CATS[kind].some((c) => c[0] === name)) { toast('已經有「' + name + '」這個分類'); break; }
+        renameCategory(kind, old, name);
+        S.panel.editCat = null;
+        renderPanel();
+        render();
+        toast('已改名為「' + name + '」');
+        break;
+      }
       case 'delete-cat': {
         const kind = S.panel.catKind || 'expense';
+        if (CATS[kind].length <= 1) { toast('至少要保留一個分類'); S.confirm = null; renderPanel(); break; }
         if (S.confirm === 'cat-' + d.name) {
-          S.config.customCats[kind] = S.config.customCats[kind].filter((c) => c.name !== d.name);
-          delete S.config.catBudgets[d.name];
+          deleteCategory(kind, d.name);
+          if (S.panel.editCat === d.name) S.panel.editCat = null;
           S.confirm = null;
-          rebuildCats();
-          persistConfig();
+          renderPanel();
+          render();
           toast('已刪除分類「' + d.name + '」');
-        } else S.confirm = 'cat-' + d.name;
-        renderPanel();
+        } else {
+          S.confirm = 'cat-' + d.name;
+          renderPanel();
+        }
+        break;
+      }
+      case 'restore-cat': {
+        const kind = S.panel.catKind || 'expense';
+        if (restoreCategory(kind, d.base)) { renderPanel(); toast('已還原'); }
+        else toast('已經有同名的分類，請先把它改名');
         break;
       }
       case 'cancel-entry':
