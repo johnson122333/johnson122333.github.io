@@ -1403,8 +1403,17 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
     let kind = 'expense', category = null, accountID = accs[0] ? accs[0].id : null, toAccountID = null;
     const sell = INVEST_SELL.test(rest) && !INVEST_BUY.test(rest);
     if (accs.length >= 2) {
-      // 兩個帳戶：依出現順序，前面轉到後面
-      kind = 'transfer'; category = '轉帳'; accountID = accs[0].id; toAccountID = accs[1].id;
+      // 兩個帳戶：沒有特別說明時，依出現順序，前面轉到後面
+      kind = 'transfer'; category = '轉帳';
+      let from = accs[0], to = accs[1];
+      // 其中一個是投資帳戶時，看「買入／賣出」決定方向，例如「買入 2886 5000 京城」是京城 → 2886
+      const invs = [from, to].filter((a) => a.kind === 'investment');
+      if (invs.length === 1) {
+        const invAcc = invs[0], other = from.id === invAcc.id ? to : from;
+        if (sell) { from = invAcc; to = other; }
+        else if (INVEST_BUY.test(rest)) { from = other; to = invAcc; }
+      }
+      accountID = from.id; toAccountID = to.id;
     } else if (inv.length && (INVEST_BUY.test(rest) || INVEST_SELL.test(rest))) {
       const invAcc = accs.find((a) => a.kind === 'investment') || inv[0];
       const other = accs.find((a) => a.id !== invAcc.id) ||
