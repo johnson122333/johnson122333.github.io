@@ -510,6 +510,16 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
       const due = mk + '-' + pad(day);
       if (due > today) return;
       if (it.lastRun && it.lastRun >= due) return;
+      if (it.kind === 'transfer') {
+        // 轉帳要有「從」和「到」兩個不同且還存在的帳戶，否則先略過
+        if (!it.accountID || !it.toAccountID || it.accountID === it.toAccountID || !accountById(it.accountID) || !accountById(it.toAccountID)) return;
+        added.push({
+          id: uid(), kind: 'transfer', amount: it.amount, category: '轉帳', note: it.name,
+          date: due, ts: Date.now(), accountID: it.accountID, toAccountID: it.toAccountID, recurring: true
+        });
+        it.lastRun = due;
+        return;
+      }
       added.push({
         id: uid(), kind: it.kind, amount: it.amount, category: it.category, note: it.name,
         date: due, ts: Date.now(), accountID: it.accountID || null, toAccountID: null, recurring: true
@@ -1159,11 +1169,15 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
 
     if (p.type === 'recurring') {
       html = head('定期收支') +
-        '<p class="help" style="margin:0">到了每月設定的日期，打開記帳本時會自動記錄，例如房租、Netflix、薪水。</p>' +
+        '<p class="help" style="margin:0">到了每月設定的日期，打開記帳本時會自動記錄，例如房租、Netflix、薪水。每月定期定額買股票，請選「轉帳」（銀行 → 股票帳戶），這樣不會算進支出和預算。</p>' +
         '<section class="card" style="padding-block:4px">' +
         (S.config.recurring.length ? S.config.recurring.slice().sort((x, y) => x.day - y.day).map((t) => {
           const confirming = S.confirm === 'rec-' + t.id;
-          return '<div class="row">' + badge(t.category) + '<button class="row-main" data-act="edit-entry" data-id="' + esc(t.id) + '" style="border:none;background:none;padding:0;text-align:left;color:inherit" aria-label="編輯 ' + esc(t.name) + '"><span class="row-title">' + esc(t.name) + '</span><span class="row-sub">每月 ' + t.day + ' 日 · ' + esc(t.category) + ' · ' + (t.kind === 'income' ? '+' : '−') + fmt(t.amount) + ' · 點一下修改</span></button>' +
+          const isT = t.kind === 'transfer';
+          const accName = (id) => { const a = id ? accountById(id) : null; return a ? a.name : '未選擇'; };
+          const sub = '每月 ' + t.day + ' 日 · ' + (isT ? '轉帳 · ' + esc(accName(t.accountID)) + ' → ' + esc(accName(t.toAccountID)) : esc(t.category)) +
+            ' · ' + (isT ? '' : t.kind === 'income' ? '+' : '−') + fmt(t.amount) + ' · 點一下修改';
+          return '<div class="row">' + badge(isT ? '轉帳' : t.category) + '<button class="row-main" data-act="edit-entry" data-id="' + esc(t.id) + '" style="border:none;background:none;padding:0;text-align:left;color:inherit" aria-label="編輯 ' + esc(t.name) + '"><span class="row-title">' + esc(t.name) + '</span><span class="row-sub">' + sub + '</span></button>' +
             '<button class="icon-btn ' + (confirming ? 'confirming' : '') + '" data-act="delete-rec" data-id="' + esc(t.id) + '" aria-label="' + (confirming ? '再按一次確認刪除' : '刪除 ' + esc(t.name)) + '" style="color:var(--expense)">' + ICON.trash + '</button></div>';
         }).join('') : '<p class="muted small">還沒有定期收支。</p>') + '</section>' +
         entryForm(true);
@@ -1199,21 +1213,33 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
     const editing = p.editId ? list.find((x) => x.id === p.editId) : null;
     const v = p.draft || (editing ? {
       name: editing.name, amount: editable(Number(editing.amount)), category: editing.category,
-      day: editing.day || 1, accountID: editing.accountID || ''
-    } : { name: '', amount: '', category: '', day: 1, accountID: S.config.lastAccountID });
+      day: editing.day || 1, accountID: editing.accountID || '', toAccountID: editing.toAccountID || ''
+    } : { name: '', amount: '', category: '', day: 1, accountID: S.config.lastAccountID, toAccountID: '' });
     const kind = p.entryKind || 'expense';
-    const cats = CATS[kind].map((c) => '<option value="' + c[0] + '"' + (c[0] === v.category ? ' selected' : '') + '>' + c[0] + '</option>').join('');
+    const isTransfer = recurring && kind === 'transfer';
+    const cats = isTransfer ? '' : CATS[kind].map((c) => '<option value="' + c[0] + '"' + (c[0] === v.category ? ' selected' : '') + '>' + c[0] + '</option>').join('');
     let days = '';
     for (let d = 1; d <= 31; d++) days += '<option value="' + d + '"' + (Number(v.day) === d ? ' selected' : '') + '>每月 ' + d + ' 日</option>';
     const what = recurring ? '定期收支' : '範本';
+    const amountField = '<div class="field"><label for="e-amount">金額</label><input class="input" id="e-amount" inputmode="decimal" value="' + esc(v.amount) + '" placeholder="0"></div>';
+    const dayField = recurring ? '<div class="field"><label for="e-day">日期</label><select class="input" id="e-day">' + days + '</select></div>' : '';
+    let middle;
+    if (isTransfer) {
+      middle = '<div class="grid2">' + amountField + dayField + '</div>' +
+        '<div class="grid2"><div class="field"><label for="e-acct">從（扣款帳戶）</label><select class="input" id="e-acct">' + accountOptions(v.accountID, true) + '</select></div>' +
+        '<div class="field"><label for="e-to">到（轉入帳戶）</label><select class="input" id="e-to">' + accountOptions(v.toAccountID, true) + '</select></div></div>' +
+        '<p class="help" style="margin:0">轉帳不算收入或支出，也不會用到預算。適合每月定期定額買股票（銀行 → 股票帳戶），或固定存錢到另一個帳戶。</p>';
+    } else {
+      middle = '<div class="grid2"><div class="field"><label for="e-cat">分類</label><select class="input" id="e-cat">' + cats + '</select></div>' + amountField + '</div>' +
+        '<div class="grid2">' + dayField +
+        '<div class="field" style="' + (recurring ? '' : 'grid-column:1 / -1') + '"><label for="e-acct">帳戶</label><select class="input" id="e-acct">' + accountOptions(v.accountID, true) + '</select></div></div>';
+    }
     return '<section class="card stack" style="gap:12px" id="entry-form"><span class="bold">' + (editing ? '修改' + what + '：' + esc(editing.name) : '新增' + what) + '</span>' +
       (recurring ? '<div class="seg" role="group" aria-label="類型"><button data-act="entry-kind" data-value="expense" aria-pressed="' + (kind === 'expense') + '">支出</button>' +
-        '<button data-act="entry-kind" data-value="income" aria-pressed="' + (kind === 'income') + '">收入</button></div>' : '') +
-      '<div class="field"><label for="e-name">名稱</label><input class="input" id="e-name" value="' + esc(v.name) + '" placeholder="' + (recurring ? '例如：房租、Netflix' : '例如：早餐') + '"></div>' +
-      '<div class="grid2"><div class="field"><label for="e-cat">分類</label><select class="input" id="e-cat">' + cats + '</select></div>' +
-      '<div class="field"><label for="e-amount">金額</label><input class="input" id="e-amount" inputmode="decimal" value="' + esc(v.amount) + '" placeholder="0"></div></div>' +
-      '<div class="grid2">' + (recurring ? '<div class="field"><label for="e-day">日期</label><select class="input" id="e-day">' + days + '</select></div>' : '') +
-      '<div class="field" style="' + (recurring ? '' : 'grid-column:1 / -1') + '"><label for="e-acct">帳戶</label><select class="input" id="e-acct">' + accountOptions(v.accountID, true) + '</select></div></div>' +
+        '<button data-act="entry-kind" data-value="income" aria-pressed="' + (kind === 'income') + '">收入</button>' +
+        '<button data-act="entry-kind" data-value="transfer" aria-pressed="' + (kind === 'transfer') + '">轉帳</button></div>' : '') +
+      '<div class="field"><label for="e-name">名稱</label><input class="input" id="e-name" value="' + esc(v.name) + '" placeholder="' + (recurring ? (isTransfer ? '例如：定期定額 0050' : '例如：房租、Netflix') : '例如：早餐') + '"></div>' +
+      middle +
       '<button class="btn wide" data-act="' + (recurring ? 'add-rec' : 'add-tpl') + '">' + (editing ? '儲存修改' : '新增') + '</button>' +
       (editing ? '<button class="btn ghost wide" data-act="cancel-entry">取消修改</button>' : '') +
       '</section>';
@@ -1223,7 +1249,8 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
     const q = (id) => panel.querySelector(id);
     return {
       name: q('#e-name').value, amount: q('#e-amount').value, category: q('#e-cat').value,
-      day: q('#e-day') ? q('#e-day').value : 1, accountID: q('#e-acct').value
+      day: q('#e-day') ? q('#e-day').value : 1, accountID: q('#e-acct').value,
+      toAccountID: q('#e-to') ? q('#e-to').value : ''
     };
   }
 
@@ -1818,15 +1845,24 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
         const name = panel.querySelector('#e-name').value.trim();
         const amount = num(panel.querySelector('#e-amount').value);
         if (!name || !(amount > 0)) { toast('請輸入名稱和金額'); break; }
+        const isTransferRec = act === 'add-rec' && S.panel.entryKind === 'transfer';
+        let toID = null;
+        if (isTransferRec) {
+          const from = panel.querySelector('#e-acct').value, to = panel.querySelector('#e-to').value;
+          if (!from || !to || from === to) { toast('請選擇兩個不同的帳戶（從哪裡轉到哪裡）'); break; }
+          toID = to;
+        }
         const list = act === 'add-tpl' ? S.config.templates : S.config.recurring;
         const existing = S.panel.editId ? list.find((x) => x.id === S.panel.editId) : null;
         const entry = existing || { id: uid() };
+        const catEl = panel.querySelector('#e-cat');
         Object.assign(entry, {
-          name, amount, category: panel.querySelector('#e-cat').value,
+          name, amount, category: catEl ? catEl.value : '轉帳',
           accountID: panel.querySelector('#e-acct').value || null
         });
         if (act === 'add-rec') {
           entry.kind = S.panel.entryKind || 'expense';
+          entry.toAccountID = toID;
           entry.day = Number(panel.querySelector('#e-day').value) || 1;
           // 這個月已經記過的話，改日期後不會再記第二次
           if (existing && entry.lastRun && entry.lastRun.slice(0, 7) === mkey(new Date())) {
