@@ -1219,7 +1219,6 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
 
     if (p.type === 'categories') {
       const kind = p.catKind || 'expense';
-      const ed = S.config.catEdits[kind];
       const editing = p.editCat ? CATS[kind].find((c) => c[0] === p.editCat) : null;
       const confirmingName = S.confirm && S.confirm.indexOf('cat-') === 0 ? S.confirm.slice(4) : null;
       html = head('分類管理') +
@@ -1238,9 +1237,6 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
             '<button class="icon-btn ' + (confirming ? 'confirming' : '') + '" data-act="delete-cat" data-name="' + esc(c[0]) + '" aria-label="' + (confirming ? '再按一次確認刪除' : '刪除 ' + esc(c[0])) + '" style="color:var(--expense)">' + ICON.trash + '</button>' +
             '</div>';
         }).join('') + '</section>' +
-        (ed.hidden.length ? '<section class="card stack" style="gap:4px"><span class="bold">已刪除的內建分類</span>' +
-          ed.hidden.map((base) => '<div class="row"><span class="row-main"><span class="row-title">' + esc(ed.renames[base] || base) + '</span></span>' +
-            '<button class="btn ghost" style="min-height:40px;padding:0 14px" data-act="restore-cat" data-base="' + esc(base) + '">還原</button></div>').join('') + '</section>' : '') +
         '<p class="help" style="margin:0">點鉛筆可以改名，點垃圾桶（按兩次）可以刪除，內建和自訂的分類都可以。刪除後，已經記的帳會保留原本的分類名稱，統計裡會顯示成灰色；至少要保留一個分類。用捷徑記帳時，句子裡有分類名稱就會自動歸類，內建的關鍵字（例如「午餐」）會跟著改名後的分類走。</p>';
     }
 
@@ -1955,12 +1951,6 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
           S.confirm = 'cat-' + d.name;
           renderPanel();
         }
-        break;
-      }
-      case 'restore-cat': {
-        const kind = S.panel.catKind || 'expense';
-        if (restoreCategory(kind, d.base)) { renderPanel(); toast('已還原'); }
-        else toast('已經有同名的分類，請先把它改名');
         break;
       }
       case 'cancel-entry':
