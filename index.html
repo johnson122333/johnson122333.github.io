@@ -678,7 +678,7 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
   };
 
   function rowHTML(r) {
-    const title = (r.note || r.category) + (r.recurring ? '（定期）' : '');
+    const title = r.note || r.category;
     return '<button class="row" data-act="edit" data-id="' + esc(r.id) + '" data-key="' + r.date.slice(0, 7) + '">' +
       badge(r.category) +
       '<span class="row-main"><span class="row-title">' + esc(title) + '</span>' +
@@ -897,7 +897,6 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
     return '<header class="topbar"><h1 style="font-size:22px">設定</h1></header>' +
       '<section class="card" style="padding-block:4px">' +
       item('budget', '每月與分類預算', S.config.budget > 0 ? nt(S.config.budget) : '未設定') +
-      item('templates', '記帳範本', S.config.templates.length + ' 個') +
       item('recurring', '定期收支', S.config.recurring.length + ' 個') +
       item('categories', '分類管理', '支出 ' + CATS.expense.length + ' · 收入 ' + CATS.income.length) +
       item('sync', '雲端同步（捷徑自動記帳）', syncSettings() ? '已設定' : '未設定') +
@@ -942,8 +941,7 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
       id: null, oldKey: null, ts: null,
       kind: incomeOnly(category) ? 'income' : 'expense',
       category, amount: '0', date: ymd(new Date()),
-      accountID: validAccount(S.config.lastAccountID), toAccountID: null, note: '',
-      showTemplates: false
+      accountID: validAccount(S.config.lastAccountID), toAccountID: null, note: ''
     };
     showSheet();
   }
@@ -954,7 +952,7 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
     S.form = {
       id: r.id, oldKey: key, ts: r.ts || Date.now(), kind: r.kind, category: r.category,
       amount: editable(r.amount), date: r.date, accountID: r.accountID || null,
-      toAccountID: r.toAccountID || null, note: r.note || '', recurring: !!r.recurring, showTemplates: false
+      toAccountID: r.toAccountID || null, note: r.note || '', recurring: !!r.recurring
     };
     S.confirm = null;
     showSheet();
@@ -1003,14 +1001,6 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
         '<span class="badge" style="background:' + c[1] + ';color:' + c[2] + '" aria-hidden="true">' + c[0].slice(0, 1) + '</span>' + c[0] + '</button>').join('') + '</div>';
     }
 
-    const templates = f.showTemplates
-      ? '<div class="card stack" style="gap:8px"><span class="small muted">點範本帶入金額與分類</span><div class="tpl-list">' +
-        (S.config.templates.length ? S.config.templates.map((t) => {
-          const c = cat(t.category);
-          return '<button class="tpl" data-act="ftpl" data-id="' + esc(t.id) + '" style="background:' + c[1] + ';color:' + c[2] + '">' + esc(t.name) + ' · ' + fmt(t.amount) + '</button>';
-        }).join('') : '<span class="small muted">還沒有範本，可以在「設定 › 記帳範本」新增。</span>') + '</div></div>'
-      : '';
-
     const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'del'];
     const confirming = S.confirm === 'delete-record';
 
@@ -1020,10 +1010,9 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
       '<h2>' + (f.id ? '編輯紀錄' : '記一筆') + '</h2>' +
       (f.id
         ? '<button class="icon-btn ' + (confirming ? 'confirming' : '') + '" data-act="fdelete" aria-label="' + (confirming ? '再按一次確認刪除' : '刪除這筆紀錄') + '" style="color:var(--expense)">' + ICON.trash + '</button>'
-        : '<button class="icon-btn" data-act="ftpls" aria-label="常用範本" aria-expanded="' + f.showTemplates + '">' + ICON.star + '</button>') +
+        : '<span style="width:44px;height:44px" aria-hidden="true"></span>') +
       '</div>' +
       (confirming ? '<p class="small" style="margin:0;color:var(--expense);text-align:right">再按一次垃圾桶即刪除</p>' : '') +
-      templates +
       '<div class="seg" role="group" aria-label="類型">' + kinds + '</div>' +
       '<div class="amount" aria-live="polite"><span>NT$</span><b class="' + f.kind + '">' + displayAmount(f.amount) + '</b></div>' +
       middle +
@@ -1183,18 +1172,6 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
           (Number(S.config.catBudgets[c[0]]) > 0 ? editable(Number(S.config.catBudgets[c[0]])) : '') + '"></div>').join('') +
         '<p class="help">用到 85% 會變成橘色提醒。</p></section>' +
         '<button class="btn wide" data-act="save-budget">儲存</button>';
-    }
-
-    if (p.type === 'templates') {
-      html = head('記帳範本') +
-        '<p class="help" style="margin:0">在記帳畫面點右上角的星號，就能一鍵帶入範本。</p>' +
-        '<section class="card" style="padding-block:4px">' +
-        (S.config.templates.length ? S.config.templates.map((t) => {
-          const confirming = S.confirm === 'tpl-' + t.id;
-          return '<div class="row">' + badge(t.category) + '<button class="row-main" data-act="edit-entry" data-id="' + esc(t.id) + '" style="border:none;background:none;padding:0;text-align:left;color:inherit" aria-label="編輯 ' + esc(t.name) + '"><span class="row-title">' + esc(t.name) + '</span><span class="row-sub">' + esc(t.category) + ' · ' + fmt(t.amount) + ' · 點一下修改</span></button>' +
-            '<button class="icon-btn ' + (confirming ? 'confirming' : '') + '" data-act="delete-tpl" data-id="' + esc(t.id) + '" aria-label="' + (confirming ? '再按一次確認刪除' : '刪除 ' + esc(t.name)) + '" style="color:var(--expense)">' + ICON.trash + '</button></div>';
-        }).join('') : '<p class="muted small">還沒有範本。</p>') + '</section>' +
-        entryForm(false);
     }
 
     if (p.type === 'sync') {
@@ -1734,20 +1711,6 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
         S.form.category = d.value;
         sheet.querySelectorAll('.cat').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.value === d.value)));
         break;
-      case 'ftpls':
-        S.form.showTemplates = !S.form.showTemplates;
-        renderSheet();
-        break;
-      case 'ftpl': {
-        const t = S.config.templates.find((x) => x.id === d.id);
-        if (!t) break;
-        Object.assign(S.form, {
-          kind: 'expense', category: t.category, amount: editable(Number(t.amount)), note: t.name,
-          accountID: validAccount(t.accountID || S.form.accountID), showTemplates: false
-        });
-        renderSheet();
-        break;
-      }
       case 'key':
         pressKey(d.key);
         break;
@@ -1999,12 +1962,10 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
         toast(existing ? '已儲存修改' : '已新增');
         break;
       }
-      case 'delete-tpl':
       case 'delete-rec': {
-        const keyName = (act === 'delete-tpl' ? 'tpl-' : 'rec-') + d.id;
+        const keyName = 'rec-' + d.id;
         if (S.confirm === keyName) {
-          if (act === 'delete-tpl') S.config.templates = S.config.templates.filter((t) => t.id !== d.id);
-          else S.config.recurring = S.config.recurring.filter((t) => t.id !== d.id);
+          S.config.recurring = S.config.recurring.filter((t) => t.id !== d.id);
           S.confirm = null;
           persistConfig();
           toast('已刪除');
